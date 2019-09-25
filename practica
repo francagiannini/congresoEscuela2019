@@ -1,0 +1,229 @@
+#Instalamos librerias
+
+#install.packages(c("nlme","sf","spdep","gstat","automap","MASS","ggplot2","GGally","fields","caret", "klaR"))
+
+#Llamamos librerias
+library(ggplot2)
+library(nlme)
+library(fields)
+library(GGally)
+library(sf)
+library(spdep)
+library(gstat)
+library(automap)
+library(MASS)
+library(caret)
+library(klaR)
+
+#Suelos
+#es una base de datos extraida de un sistema de información geográfica de la provincia
+#la información corresponde a variables que caracterizan el suelo en los primeros 15 cm de profundidad
+#los datos están georreferenciados las variables son MOS:Materia Orgánica de Suelo, ARC:Arcilla, 
+#Zones.4: Zonificación multivariada y TvsPP:cociente entre Tm anual y pp anuales acumuladas
+
+#Objetivo 1: Generar un modelo explicativo de la variabilidad de MOS
+#Objetivo 2: Evaluar si existe comportamiento diferencial respecto a MOS entre las Zonas
+
+suelos <- read.table(file = "clipboard", sep="\t", header = T)
+#Análisis exploratorio
+quilt.plot(x = suelos$Xt, y = suelos$Yt, suelos$MOS, nx=30, ny=30 )
+
+pairs.chart <- ggpairs(suelos, lower = list(continuous = "cor"), upper = list(continuous = "points", combo = "dot")) + ggplot2::theme(axis.text = element_text(size = 6))
+pairs.chart
+
+cord <- coordinates (suelos[,c("Xt","Yt")])
+gri <- dnearneigh(cord,100,50000)
+
+plot(gri, cord, col = "#009999", pch = 20, cex = 1)
+
+lw <- nb2listw(gri, style = "W")
+
+MI <- moran.mc(suelos$MOS, lw, nsim = 1000 )
+
+GT <- geary.test(suelos$MOS, lw)
+
+#Objetivo 1
+
+  #"Regression Kriging lm en dos pasos"
+  liner_MOS<- lm(MOS~1+Zones.4.+pH+ARC+Altura+TvsPP, data= suelos)
+  reg <-stepAIC(liner_MOS, direction="both")
+  liner_MOS<-lm(MOS ~ 1 + Zones.4. + pH + ARC + Altura + TvsPP, data = suelos)
+  
+  summary(liner_MOS)
+  
+  moran.mc(liner_MOS$residuals, lw, nsim = 1000)
+  
+  coordinates(suelos)<-~Xt+Yt
+  
+  Autofit_MOS <- autofitVariogram(liner_MOS$residuals~Xt+Yt, suelos, c("Sph", "Exp", "Gau"),
+                                  cressie=T)
+  
+  plot(Autofit_MOS)
+  
+  krig_residuos <- krige(residuals(liner_MOS)~1, suelos, newdata=suelos, 
+                   model=Autofit_MOS$var_model,nmax=25)
+  
+  RegKrig_lin <- liner_MOS$fitted.values + krig_residuos$var1.pred
+  
+  plot(suelos$MOS, liner_MOS$fitted.values)
+  
+  plot(RegKrig_lin, suelos$MOS)
+
+  ##REML
+  REML_MOS <-gls(MOS~1+Zones.4.+pH+ARC+Altura+TvsPP, data= suelos
+                             ,method="REML",na.action=na.omit)
+  plot(REML_MOS)
+  
+  summary(REML_MOS)
+  
+  REML_MOS_corr <-gls(MOS~1+Zones.4.+pH+ARC+Altura+TvsPP, data= suelos
+                      ,correlation=corGaus(form=~as.numeric(as.character(Xt))+as.numeric(as.character(Yt)),
+                                          metric="euclidean",nugget=T)
+                 ,method="REML",na.action=na.omit)
+  
+  plot(REML_MOS_corr)
+  summary(REML_MOS_corr)
+  
+  anova(REML_MOS, REML_MOS_corr)
+
+##Validación cruzada
+
+suelossample <- as.data.frame(suelos)
+trainIndex <- createDataPartition(suelossample$ID_2, p=0.8, list=FALSE)
+data_train <- suelossample[ trainIndex,]
+data_test <- suelossample[-trainIndex,]
+
+#ajuste
+REML_MOS_corr <-gls(MOS~1+Zones.4.+pH+ARC+Altura+TvsPP, data= data_train
+                    ,correlation=corGaus(form=~as.numeric(as.character(Xt))+as.numeric(as.character(Yt)),
+                                         metric="euclidean",nugget=T)
+                    ,method="REML",na.action=na.omit)
+#predecimos 
+
+predict<- predict(REML_MOS_corr, data_test)
+
+#evaluamos
+
+plot(predict, data_test$MOS)
+
+ErrorCuadratico=(data_test$MOS-predict)^2 ###residuos
+ErrorCuadraticoMedio=mean(ErrorCuadratico)
+RMSE=sqrt(ErrorCuadraticoMedio)
+RMSEPrel=RMSE/mean(data_test$MOS)*100 ###relativo a la media
+
+###Ejercicio!! comparar respecto a desempe;o predictivo los modelos que ajustamos
+
+#Objetivo 2
+REML_MOS_Zonas <-gls(MOS~1+Zones.4.
+                     #,correlation=corGaus(form=~as.numeric(as.character(Xt))+as.numeric(as.character(Yt)),
+                      #                    metric="euclidean",nugget=FALSE)
+                     ,method="REML",na.action=na.omit,data=suelos)
+summary(REML_MOS_Zonas)
+
+REML_MOS_Zonas_sp <-gls(MOS~1+Zones.4.
+           ,correlation=corGaus(form=~as.numeric(as.character(Xt))+as.numeric(as.character(Yt)),
+                               metric="euclidean",nugget=FALSE)
+           ,method="REML",na.action=na.omit,data=suelos)
+
+summary((REML_MOS))  
+REML_MOS$apVar
+plot(Variogram(REML_MOS,form=~Xt+Yt))
+
+anova(REML_MOS_Zonas, REML_MOS_Zonas_sp)
+
+#Animales capturados
+#Los datos en habsel representan el número
+#de animales capturados (captures) en 71 trampas permanentes ubicadas en coordenadas
+#x y y en una isla noruega (Datos de Ottar Bjornstad)
+#[https://ms.mcmaster.ca/~bolker/eeid/lme.pdf]. 
+#Se informan también varias variables del hábitat en la vecindad de
+#la trampa. Nos concentraremos en lichen (cobertura de liquen), veg (cobertura de
+#vegetación total), heather (cobertura de brezos), moss (cobertura de musgos) y stdp
+#(una medida de la complejidad estructural).
+
+#Exploratorio
+habsel1 <- read.table(file = "clipboard", header=T, sep="\t")
+habsel <- habsel1[,c("captures","lichen","veg","heather","moss","stdp", "x", "y")]
+
+quilt.plot(x = habsel1$x, y = habsel1$y, habsel1$captures, nx=20, ny=20 )
+
+
+pairs.chart <- ggpairs(habsel, lower = list(continuous = "cor"), upper = list(continuous = "points", combo = "dot")) + ggplot2::theme(axis.text = element_text(size = 6))
+pairs.chart
+
+cord <- coordinates (habsel[,c("x","y")])
+gri <- dnearneigh(cord,0,10)
+
+lw <- nb2listw(gri, style = "W")
+
+MI <- moran.mc(log(habsel$captures+1), lw, nsim = 1000 )
+
+GT <- geary.test(log(habsel$captures+1), lw, nsim =1000)
+
+#IM local
+#ML <- localmoran(log(habsel$captures+1),lw,p.adjust.method="bonferroni",alternative ="less")
+#summary(ML)
+#Moran Plot
+#MP <-moran.plot(log(habsel$captures+1),lw,col=3, quiet=T,labels=F,zero.policy=F,xlab="log(captures+1)", ylab="Spatially Lagged")
+
+
+summary(MP)
+
+##Modelo 1 regresión lineal solo estructura de medias
+fit1<-gls(log(captures + 1) ~ lichen + veg + heather + moss + stdp, data = habsel)
+
+plot(fit1)
+summary(fit1)
+
+    #Distribución espacial de los residuos en los residuos
+    quilt.plot(x = habsel$x, y = habsel$y, fit1$residuals, nx=40, ny=40 )
+    ###  Definición de vecindarios para cada punto muestreado ####
+    
+    hist(fit1$residuals)
+    plot(fit1$fitted.values, habsel$y)
+
+##Modelo 2
+fit2 <- gls(log(captures + 1) ~ 1, data = habsel,
+            corr = corSpatial(form = ~x + y, type ="exponential", nugget = F)
+            , method = "REML")
+hist(fit2$residuals)
+quilt.plot(x = habsel$x, y = habsel$y, fit2$residuals, nx=40, ny=40 )
+
+plot(Variogram(fit2,form=~x+y))
+
+#Modelo 3
+fit3 <- gls(log(captures + 1) ~ lichen + veg + heather + moss + stdp, data = habsel,
+            corr = corSpatial(form = ~x + y, type ="exponential", nugget = F)
+            , method = "REML")
+summary(fit3)
+hist(fit3$residuals)
+plot(fit3$residuals,fit3$predict)
+plot(Variogram(fit3,form=~x+y))
+
+#Modelo 4
+fit4 <- gls(log(captures + 1) ~ lichen + veg + heather + moss + stdp, data = habsel,
+            corr = corSpatial(form = ~x + y, type ="exponential", nugget = T)
+            , method = "REML")
+summary(fit4)
+
+plot(Variogram(fit3,form=~x+y))
+
+
+#Selección por LRT
+anova(fit1,fit4, fit3)
+
+#Eliminación backward
+
+#Modelo 5
+fit5 <- gls(log(captures + 1) ~ lichen + veg + heather + moss + stdp, data = habsel,
+            corr = corSpatial(form = ~x + y, type ="exponential", nugget = F)
+            , method = "ML")
+summary(fit5)
+
+#Modelo 6
+fit6 <- gls(log(captures + 1) ~ lichen + veg  + moss + stdp, data = habsel,
+            corr = corSpatial(form = ~x + y, type ="exponential", nugget = F)
+            , method = "ML")
+summary(fit6)
+
+plot(fit6)
